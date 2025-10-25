@@ -102,8 +102,13 @@ def proxy(site):
 
     headers = {key: value for key, value in flask.request.headers if key.lower() != 'host'}
     method = flask.request.method
-    data = flask.request.get_data() 
+    data = flask.request.get_data()
     params = flask.request.args
+
+    def stream_response(resp):
+        for chunk in resp.iter_content(chunk_size=8192):
+            if chunk:
+                yield chunk
 
     for attempt in range(MAX_RETRIES):
         if proxies_list:
@@ -113,12 +118,8 @@ def proxy(site):
             tried_indices.add(proxy_index)
             proxy_url = format_proxy_url(proxy_data)
 
-
             try:
-                proxies = {
-                    'http': proxy_url,
-                    'https': proxy_url
-                }
+                proxies = {'http': proxy_url, 'https': proxy_url}
 
                 response = requests.request(
                     method=method,
@@ -129,7 +130,8 @@ def proxy(site):
                     proxies=proxies,
                     allow_redirects=True,
                     timeout=30,
-                    verify=False
+                    verify=False,
+                    stream=True  # <--- enable streaming
                 )
 
                 excluded_headers = ['content-encoding', 'content-length', 'transfer-encoding', 'connection']
@@ -139,7 +141,7 @@ def proxy(site):
                 ]
 
                 return flask.Response(
-                    response.content, 
+                    stream_response(response),
                     status=response.status_code,
                     headers=response_headers
                 )
@@ -148,6 +150,7 @@ def proxy(site):
                 last_error = e
                 continue
 
+    # If all proxies fail, try direct connection
     try:
         response = requests.request(
             method=method,
@@ -156,7 +159,8 @@ def proxy(site):
             data=data,
             params=params,
             allow_redirects=True,
-            timeout=30
+            timeout=30,
+            stream=True
         )
 
         excluded_headers = ['content-encoding', 'content-length', 'transfer-encoding', 'connection']
@@ -166,15 +170,17 @@ def proxy(site):
         ]
 
         return flask.Response(
-            response.content,
+            stream_response(response),
             status=response.status_code,
             headers=response_headers
         )
+
     except Exception as e:
         return flask.jsonify({
             'error': 'All proxy attempts failed and direct connection failed',
             'last_error': str(last_error) if last_error else str(e)
         }), 502
+
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)
