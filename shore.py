@@ -14,7 +14,7 @@ sys.stdout.reconfigure(encoding='utf-8')
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 PROXY_ENDPOINTS = [
-    "https://proxylist.geonode.com/api/proxy-list?limit=500",
+    "https://proxylist.geonode.com/api/proxy-list?anonymityLevel=elite&filterUpTime=90&speed=fast&google=false&limit=500&page=1&sort_by=lastChecked&sort_type=desc",
 ]
 
 app = flask.Flask(__name__)
@@ -147,7 +147,8 @@ def proxy(site):
                 return flask.Response(
                     stream_response(response),
                     status=response.status_code,
-                    headers=response_headers
+                    headers=response_headers,
+                    proxy = proxy_url
                 )
 
             except Exception as e:
