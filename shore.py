@@ -6,6 +6,9 @@ import sys
 import time
 import urllib3
 from datetime import datetime, timedelta
+from flask_cors import CORS
+
+
 
 sys.stdout.reconfigure(encoding='utf-8')
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -15,6 +18,7 @@ PROXY_ENDPOINTS = [
 ]
 
 app = flask.Flask(__name__)
+CORS(app)  
 
 proxy_cache = {
     'data': [],
