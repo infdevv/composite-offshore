@@ -37,34 +37,13 @@ def fetch_proxies_from_endpoints():
             pass
     return all_proxies
 
-def validate_proxy(proxy_data, timeout=5):
-    try:
-        ip = proxy_data.get('ip')
-        port = proxy_data.get('port')
-        protocol = proxy_data.get('protocols', ['http'])[0].lower()
-        
-        if not ip or not port:
-            return False
-
-        proxy_url = f"{protocol}://{ip}:{port}"
-        proxies = {
-            'http': proxy_url,
-            'https': proxy_url
-        }
-
-        test_url = "http://httpbin.org/ip" 
-        resp = requests.get(test_url, proxies=proxies, timeout=timeout, verify=False)
-        return resp.status_code == 200
-    except:
-        return False
-
 def get_proxies():
     current_time = datetime.now()
 
     if (proxy_cache['data'] and
         proxy_cache['timestamp'] and
         (current_time - proxy_cache['timestamp']).seconds < proxy_cache['ttl']):
-        print(f"Using cached proxies ({len(proxy_cache['data'])} validated proxies)")
+        print(f"Using cached proxies ({len(proxy_cache['data'])} proxies)")
         return proxy_cache['data']
 
     print("Fetching fresh proxies...")
@@ -72,25 +51,11 @@ def get_proxies():
 
     http_proxies = [p for p in all_proxies if 'http' in p.get('protocols', []) or 'https' in p.get('protocols', [])]
 
-    http_proxies.sort(key=lambda p: (
-        -p.get('upTime', 0),
-        -p.get('speed', 0),
-        p.get('latency', 9999)
-    ))
-
-    print(f"Validating proxies (top {min(20, len(http_proxies))})...")
-    working_proxies = []
-    for proxy in http_proxies[:20]: 
-        if validate_proxy(proxy):
-            working_proxies.append(proxy)
-            if len(working_proxies) >= 5: 
-                break
-
-    proxy_cache['data'] = working_proxies
+    proxy_cache['data'] = http_proxies
     proxy_cache['timestamp'] = current_time
 
-    print(f"Validated {len(working_proxies)} working proxies")
-    return working_proxies
+    print(f"Fetched {len(http_proxies)} proxies")
+    return http_proxies
 
 def select_random_proxy(proxies, exclude_indices=None):
     """Select a random working proxy"""
@@ -143,6 +108,8 @@ def proxy(site):
     for attempt in range(MAX_RETRIES):
         if proxies_list:
             proxy_data, proxy_index = select_random_proxy(proxies_list, tried_indices)
+            if proxy_data is None:
+                continue
             tried_indices.add(proxy_index)
             proxy_url = format_proxy_url(proxy_data)
 
