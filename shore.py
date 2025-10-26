@@ -94,6 +94,12 @@ def health():
 
 @app.route('/<path:site>', methods=['GET', 'POST', 'DELETE', 'PUT', 'PATCH', 'HEAD', 'OPTIONS'])
 def proxy(site):
+    if flask.request.method == 'OPTIONS':
+        response = flask.make_response('', 204)
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        response.headers['Access-Control-Allow-Methods'] = 'GET,POST,PUT,PATCH,DELETE,OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type,Authorization'
+        return response
     MAX_RETRIES = 3
     tried_indices = set()
     last_error = None
