@@ -8,8 +8,6 @@ import urllib3
 from datetime import datetime, timedelta
 from flask_cors import CORS
 
-
-
 sys.stdout.reconfigure(encoding='utf-8')
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -18,12 +16,27 @@ PROXY_ENDPOINTS = [
 ]
 
 app = flask.Flask(__name__)
-CORS(app)  
+CORS(app)
 
 proxy_cache = {
     'data': [],
     'timestamp': None,
-    'ttl': 5 * 60  
+    'ttl': 5 * 60
+}
+
+# Headers that should NOT be forwarded to target
+BLOCKED_REQUEST_HEADERS = {
+    'host', 'origin', 'referer', 'x-forwarded-for', 
+    'x-forwarded-proto', 'x-forwarded-host', 'x-real-ip',
+    'connection', 'accept-encoding'
+}
+
+# Headers to remove from response before sending back
+BLOCKED_RESPONSE_HEADERS = {
+    'content-encoding', 'content-length', 'transfer-encoding', 
+    'connection', 'access-control-allow-origin', 
+    'access-control-allow-credentials', 'access-control-expose-headers',
+    'access-control-allow-methods', 'access-control-allow-headers'
 }
 
 def fetch_proxies_from_endpoints():
@@ -35,25 +48,25 @@ def fetch_proxies_from_endpoints():
                 data = response.json()
                 proxies = data.get('data', [])
                 all_proxies.extend(proxies)
-            else:
-                pass
-        except Exception as e:
+        except Exception:
             pass
     return all_proxies
 
 def get_proxies():
     current_time = datetime.now()
 
-    if (proxy_cache['data'] and
+    if (proxy_cache['data'] and 
         proxy_cache['timestamp'] and
-        (current_time - proxy_cache['timestamp']).seconds < proxy_cache['ttl']):
+        (current_time - proxy_cache['timestamp']).total_seconds() < proxy_cache['ttl']):
         print(f"Using cached proxies ({len(proxy_cache['data'])} proxies)")
         return proxy_cache['data']
 
     print("Fetching fresh proxies...")
     all_proxies = fetch_proxies_from_endpoints()
-
-    http_proxies = [p for p in all_proxies if 'http' in p.get('protocols', []) or 'https' in p.get('protocols', [])]
+    http_proxies = [
+        p for p in all_proxies 
+        if 'http' in p.get('protocols', []) or 'https' in p.get('protocols', [])
+    ]
 
     proxy_cache['data'] = http_proxies
     proxy_cache['timestamp'] = current_time
@@ -62,13 +75,10 @@ def get_proxies():
     return http_proxies
 
 def select_random_proxy(proxies, exclude_indices=None):
-    """Select a random working proxy"""
     if not proxies:
         return None, None
 
-    if exclude_indices is None:
-        exclude_indices = set()
-
+    exclude_indices = exclude_indices or set()
     available_indices = [i for i in range(len(proxies)) if i not in exclude_indices]
 
     if not available_indices:
@@ -83,113 +93,127 @@ def format_proxy_url(proxy_data):
     protocol = proxy_data.get('protocols', ['http'])[0].lower()
     return f"{protocol}://{ip}:{port}"
 
+def build_request_headers(original_headers):
+    """Filter out problematic headers that shouldn't be proxied"""
+    return {
+        key: value 
+        for key, value in original_headers 
+        if key.lower() not in BLOCKED_REQUEST_HEADERS
+    }
+
+def build_response_headers(response_headers):
+    """
+    Filter response headers and add CORS headers for browser compatibility
+    """
+    filtered = [
+        (name, value) 
+        for name, value in response_headers.items()
+        if name.lower() not in BLOCKED_RESPONSE_HEADERS
+    ]
+    
+    # Add permissive CORS headers
+    cors_headers = [
+        ('Access-Control-Allow-Origin', '*'),
+        ('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS'),
+        ('Access-Control-Allow-Headers', '*'),
+        ('Access-Control-Expose-Headers', '*'),
+    ]
+    
+    return filtered + cors_headers
+
 @app.route('/health', methods=['GET'])
 def health():
     proxies_list = get_proxies()
+    cache_age = None
+    if proxy_cache['timestamp']:
+        cache_age = (datetime.now() - proxy_cache['timestamp']).total_seconds()
+    
     return flask.jsonify({
         'status': 'ok',
         'proxies_available': len(proxies_list),
-        'cache_age_seconds': (datetime.now() - proxy_cache['timestamp']).seconds if proxy_cache['timestamp'] else None
+        'cache_age_seconds': cache_age
     })
 
 @app.route('/<path:site>', methods=['GET', 'POST', 'DELETE', 'PUT', 'PATCH', 'HEAD', 'OPTIONS'])
 def proxy(site):
+    # Handle preflight OPTIONS requests immediately
     if flask.request.method == 'OPTIONS':
         response = flask.make_response('', 204)
         response.headers['Access-Control-Allow-Origin'] = '*'
-        response.headers['Access-Control-Allow-Methods'] = 'GET,POST,PUT,PATCH,DELETE,OPTIONS'
-        response.headers['Access-Control-Allow-Headers'] = 'Content-Type,Authorization'
+        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, PATCH, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = '*'
         return response
+
     MAX_RETRIES = 3
     tried_indices = set()
     last_error = None
 
     proxies_list = get_proxies()
 
-    target_url = site
-    if not target_url.startswith(('http://', 'https://')):
-        target_url = 'https://' + target_url
-
-    headers = {key: value for key, value in flask.request.headers if key.lower() != 'host'}
+    target_url = site if site.startswith(('http://', 'https://')) else f'https://{site}'
+    headers = build_request_headers(flask.request.headers)
     method = flask.request.method
     data = flask.request.get_data()
     params = flask.request.args
 
-    def stream_response(resp):
-        for chunk in resp.iter_content(chunk_size=8192):
-            if chunk:
-                yield chunk
-
-    for attempt in range(MAX_RETRIES):
-        if proxies_list:
+    def make_request(use_proxy=True):
+        kwargs = {
+            'method': method,
+            'url': target_url,
+            'headers': headers,
+            'data': data,
+            'params': params,
+            'allow_redirects': True,
+            'timeout': 30,
+            'verify': False,
+            'stream': True
+        }
+        
+        if use_proxy and proxies_list:
             proxy_data, proxy_index = select_random_proxy(proxies_list, tried_indices)
-            if proxy_data is None:
-                continue
-            tried_indices.add(proxy_index)
-            proxy_url = format_proxy_url(proxy_data)
+            if proxy_data:
+                tried_indices.add(proxy_index)
+                proxy_url = format_proxy_url(proxy_data)
+                kwargs['proxies'] = {'http': proxy_url, 'https': proxy_url}
+                print(f"Trying proxy: {proxy_url}")
+        
+        return requests.request(**kwargs)
 
-            try:
-                proxies = {'http': proxy_url, 'https': proxy_url}
+    # Try with proxies first
+    for attempt in range(MAX_RETRIES):
+        if not proxies_list or len(tried_indices) >= len(proxies_list):
+            break
+            
+        try:
+            response = make_request(use_proxy=True)
+            response_headers = build_response_headers(response.raw.headers)
+            
+            return flask.Response(
+                response.iter_content(chunk_size=8192),
+                status=response.status_code,
+                headers=response_headers
+            )
+        except Exception as e:
+            last_error = e
+            print(f"Proxy attempt {attempt + 1} failed: {e}")
+            continue
 
-                response = requests.request(
-                    method=method,
-                    url=target_url,
-                    headers=headers,
-                    data=data,
-                    params=params,
-                    proxies=proxies,
-                    allow_redirects=True,
-                    timeout=30,
-                    verify=False,
-                    stream=True  # <--- enable streaming
-                )
-
-                excluded_headers = ['content-encoding', 'content-length', 'transfer-encoding', 'connection']
-                response_headers = [
-                    (name, value) for name, value in response.raw.headers.items()
-                    if name.lower() not in excluded_headers
-                ]
-
-                return flask.Response(
-                    stream_response(response),
-                    status=response.status_code,
-                    headers=response_headers,
-                    proxy = proxy_url
-                )
-
-            except Exception as e:
-                last_error = e
-                continue
-
-    # If all proxies fail, try direct connection
+    # Fallback to direct connection
+    print("All proxies failed, trying direct connection...")
     try:
-        response = requests.request(
-            method=method,
-            url=target_url,
-            headers=headers,
-            data=data,
-            params=params,
-            allow_redirects=True,
-            timeout=30,
-            stream=True
-        )
-
-        excluded_headers = ['content-encoding', 'content-length', 'transfer-encoding', 'connection']
-        response_headers = [
-            (name, value) for name, value in response.raw.headers.items()
-            if name.lower() not in excluded_headers
-        ]
-
+        response = make_request(use_proxy=False)
+        response_headers = build_response_headers(response.raw.headers)
+        
         return flask.Response(
-            stream_response(response),
+            response.iter_content(chunk_size=8192),
             status=response.status_code,
             headers=response_headers
         )
-
     except Exception as e:
         return flask.jsonify({
             'error': 'All proxy attempts failed and direct connection failed',
-            'last_error': str(last_error) if last_error else str(e)
+            'last_error': str(last_error) if last_error else str(e),
+            'target_url': target_url
         }), 502
 
 
