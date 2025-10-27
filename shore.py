@@ -134,8 +134,214 @@ def health():
         'cache_age_seconds': cache_age
     })
 
+def handle_chat_completions(site, use_proxy=True):
+    """
+    Shared logic for chat completions endpoints.
+    Returns a Flask Response or tuple (response, status_code).
+    """
+    # Build target URL - append /v1/chat/completions to the base site
+    base_url = site if site.startswith(('http://', 'https://')) else f'https://{site}'
+    base_url = base_url.rstrip('/')
+    target_url = f'{base_url}/v1/chat/completions'
+
+    # Get OpenAI-style headers and payload
+    headers = build_request_headers(flask.request.headers)
+    
+    # Ensure Content-Type is set for JSON
+    if 'content-type' not in {k.lower() for k in headers.keys()}:
+        headers['Content-Type'] = 'application/json'
+
+    try:
+        payload = flask.request.get_json(force=True)
+    except Exception:
+        return flask.jsonify({
+            'error': 'Invalid JSON payload',
+            'message': 'Expected OpenAI-compatible JSON payload'
+        }), 400
+
+    # Check if streaming is requested
+    is_streaming = payload.get('stream', False)
+
+    if use_proxy:
+        MAX_RETRIES = 3
+        tried_indices = set()
+        last_error = None
+        proxies_list = get_proxies()
+
+        def make_request_with_proxy():
+            proxy_data, proxy_index = select_random_proxy(proxies_list, tried_indices)
+            if not proxy_data:
+                return None
+            
+            tried_indices.add(proxy_index)
+            proxy_url = format_proxy_url(proxy_data)
+            print(f"Trying proxy: {proxy_url}")
+            
+            return requests.post(
+                url=target_url,
+                headers=headers,
+                json=payload,
+                proxies={'http': proxy_url, 'https': proxy_url},
+                allow_redirects=True,
+                timeout=120,
+                verify=False,
+                stream=is_streaming
+            )
+
+        # Try with proxies first
+        for attempt in range(MAX_RETRIES):
+            if not proxies_list or len(tried_indices) >= len(proxies_list):
+                break
+                
+            try:
+                response = make_request_with_proxy()
+                if response is None:
+                    break
+                    
+                response_headers = build_response_headers(response.raw.headers)
+                
+                if is_streaming:
+                    def generate():
+                        for chunk in response.iter_content(chunk_size=None, decode_unicode=False):
+                            if chunk:
+                                yield chunk
+                    
+                    return flask.Response(
+                        generate(),
+                        status=response.status_code,
+                        headers=response_headers,
+                        mimetype='text/event-stream'
+                    )
+                else:
+                    return flask.Response(
+                        response.content,
+                        status=response.status_code,
+                        headers=response_headers
+                    )
+            except Exception as e:
+                last_error = e
+                print(f"Proxy attempt {attempt + 1} failed: {e}")
+                continue
+
+        # Fallback to direct connection
+        print("All proxies failed, trying direct connection...")
+        try:
+            response = requests.post(
+                url=target_url,
+                headers=headers,
+                json=payload,
+                allow_redirects=True,
+                timeout=120,
+                verify=False,
+                stream=is_streaming
+            )
+            
+            response_headers = build_response_headers(response.raw.headers)
+            
+            if is_streaming:
+                def generate():
+                    for chunk in response.iter_content(chunk_size=None, decode_unicode=False):
+                        if chunk:
+                            yield chunk
+                
+                return flask.Response(
+                    generate(),
+                    status=response.status_code,
+                    headers=response_headers,
+                    mimetype='text/event-stream'
+                )
+            else:
+                return flask.Response(
+                    response.content,
+                    status=response.status_code,
+                    headers=response_headers
+                )
+        except Exception as e:
+            return flask.jsonify({
+                'error': {
+                    'message': 'All proxy attempts failed and direct connection failed',
+                    'type': 'proxy_error',
+                    'last_error': str(last_error) if last_error else str(e),
+                    'target_url': target_url
+                }
+            }), 502
+    else:
+        # Direct connection without proxy
+        try:
+            response = requests.post(
+                url=target_url,
+                headers=headers,
+                json=payload,
+                allow_redirects=True,
+                timeout=120,
+                verify=False,
+                stream=is_streaming
+            )
+            
+            response_headers = build_response_headers(response.raw.headers)
+            
+            if is_streaming:
+                def generate():
+                    for chunk in response.iter_content(chunk_size=None, decode_unicode=False):
+                        if chunk:
+                            yield chunk
+                
+                return flask.Response(
+                    generate(),
+                    status=response.status_code,
+                    headers=response_headers,
+                    mimetype='text/event-stream'
+                )
+            else:
+                return flask.Response(
+                    response.content,
+                    status=response.status_code,
+                    headers=response_headers
+                )
+        except Exception as e:
+            return flask.jsonify({
+                'error': {
+                    'message': 'Direct connection failed',
+                    'type': 'connection_error',
+                    'error': str(e),
+                    'target_url': target_url
+                }
+            }), 502
+
+@app.route('/v1/chat/completions/<path:site>', methods=['POST', 'OPTIONS'])
+def chat_completions(site):
+    """
+    OpenAI-compatible endpoint that proxies to arbitrary base URLs.
+    Accepts OpenAI headers/payload and forwards to {site}/v1/chat/completions
+    """
+    if flask.request.method == 'OPTIONS':
+        response = flask.make_response('', 204)
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = '*'
+        return response
+
+    return handle_chat_completions(site, use_proxy=True)
+
+@app.route('/v1/chat/completions/noproxy/<path:site>', methods=['POST', 'OPTIONS'])
+def chat_completions_noproxy(site):
+    """
+    OpenAI-compatible endpoint with direct connection (no proxy).
+    Useful for OpenAI module usage when proxies cause issues.
+    Accepts OpenAI headers/payload and forwards to {site}/v1/chat/completions
+    """
+    if flask.request.method == 'OPTIONS':
+        response = flask.make_response('', 204)
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = '*'
+        return response
+
+    return handle_chat_completions(site, use_proxy=False)
+
 @app.route('/<path:site>', methods=['GET', 'POST', 'DELETE', 'PUT', 'PATCH', 'HEAD', 'OPTIONS'])
 def proxy(site):
+    """General purpose proxy for any HTTP method to any URL"""
     # Handle preflight OPTIONS requests immediately
     if flask.request.method == 'OPTIONS':
         response = flask.make_response('', 204)
