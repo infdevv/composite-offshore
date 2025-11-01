@@ -16,6 +16,7 @@ PROXY_ENDPOINTS = [
 ]
 
 app = flask.Flask(__name__)
+CORS(app)  # Enable CORS for all routes
 
 proxy_cache = {
     'data': [],
