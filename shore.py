@@ -139,10 +139,20 @@ def handle_chat_completions(site, use_proxy=True):
     Shared logic for chat completions endpoints.
     Returns a Flask Response or tuple (response, status_code).
     """
-    # Build target URL - append /v1/chat/completions to the base site
-    base_url = site if site.startswith(('http://', 'https://')) else f'https://{site}'
-    base_url = base_url.rstrip('/')
-    target_url = f'{base_url}/v1/chat/completions'
+    # Build target URL
+    # If site already contains /v1/chat/completions or /chat/completions, use it as-is
+    # Otherwise, append /v1/chat/completions
+    if not site.startswith(('http://', 'https://')):
+        site = f'https://{site}'
+    
+    site = site.rstrip('/')
+    
+    # Check if the URL already has the completions endpoint
+    if '/chat/completions' in site:
+        target_url = site
+    else:
+        # Append /v1/chat/completions
+        target_url = f'{site}/v1/chat/completions'
 
     # Get OpenAI-style headers and payload
     headers = build_request_headers(flask.request.headers)
@@ -308,21 +318,6 @@ def handle_chat_completions(site, use_proxy=True):
                 }
             }), 502
 
-@app.route('/v1/chat/completions/<path:site>', methods=['POST', 'OPTIONS'])
-def chat_completions(site):
-    """
-    OpenAI-compatible endpoint that proxies to arbitrary base URLs.
-    Accepts OpenAI headers/payload and forwards to {site}/v1/chat/completions
-    """
-    if flask.request.method == 'OPTIONS':
-        response = flask.make_response('', 204)
-        response.headers['Access-Control-Allow-Origin'] = '*'
-        response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
-        response.headers['Access-Control-Allow-Headers'] = '*'
-        return response
-
-    return handle_chat_completions(site, use_proxy=True)
-
 @app.route('/v1/chat/completions/noproxy/<path:site>', methods=['POST', 'OPTIONS'])
 def chat_completions_noproxy(site):
     """
@@ -338,6 +333,21 @@ def chat_completions_noproxy(site):
         return response
 
     return handle_chat_completions(site, use_proxy=False)
+
+@app.route('/v1/chat/completions/<path:site>', methods=['POST', 'OPTIONS'])
+def chat_completions(site):
+    """
+    OpenAI-compatible endpoint that proxies to arbitrary base URLs.
+    Accepts OpenAI headers/payload and forwards to {site}/v1/chat/completions
+    """
+    if flask.request.method == 'OPTIONS':
+        response = flask.make_response('', 204)
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = '*'
+        return response
+
+    return handle_chat_completions(site, use_proxy=True)
 
 @app.route('/<path:site>', methods=['GET', 'POST', 'DELETE', 'PUT', 'PATCH', 'HEAD', 'OPTIONS'])
 def proxy(site):
