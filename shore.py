@@ -16,7 +16,6 @@ PROXY_ENDPOINTS = [
 ]
 
 app = flask.Flask(__name__)
-CORS(app)
 
 proxy_cache = {
     'data': [],
