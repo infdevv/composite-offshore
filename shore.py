@@ -134,7 +134,6 @@ def health():
         'cache_age_seconds': cache_age
     })
 
-@app.route('/jippa', methods=['POST'])
 def rippa():
     jsonData = flask.request.get_json()
     res = jsonData["messages"][0]["content"].replace("\n", "\\n")
@@ -373,6 +372,20 @@ def chat_completions(site):
         return response
 
     return handle_chat_completions(site, use_proxy=True)
+
+@app.route('/jippa', methods=['POST', 'OPTIONS'])
+def jippa():
+    """
+    Endpoint for jippa functionality, returns streaming chat completion response.
+    """
+    if flask.request.method == 'OPTIONS':
+        response = flask.make_response('', 204)
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = '*'
+        return response
+
+    return rippa()
 
 @app.route('/<path:site>', methods=['GET', 'POST', 'DELETE', 'PUT', 'PATCH', 'HEAD', 'OPTIONS'])
 def proxy(site):
