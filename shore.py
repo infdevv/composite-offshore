@@ -134,6 +134,27 @@ def health():
         'cache_age_seconds': cache_age
     })
 
+@app.route('/jippa', methods=['POST'])
+def rippa():
+    jsonData = flask.request.get_json()
+    res = jsonData["messages"][0]["content"].replace("\n", "\\n")
+
+    response_data = {
+        "id": f"chatcmpl-{random.randint(0, 9999)}",
+        "object": "chat.completion.chunk",
+        "created": 1761964828,
+        "model": "pippatherippa",
+        "system_fingerprint": "pippatherippa",
+        "choices": [{
+            "index": 0,
+            "delta": {"role": "assistant", "content": res},
+            "logprobs": None,
+            "finish_reason": "stop"
+        }]
+    }
+    return f"data: {json.dumps(response_data)}\n\ndata: [DONE]\n"
+ 
+
 def handle_chat_completions(site, use_proxy=True):
     """
     Shared logic for chat completions endpoints.
@@ -325,6 +346,8 @@ def chat_completions_noproxy(site):
     Useful for OpenAI module usage when proxies cause issues.
     Accepts OpenAI headers/payload and forwards to {site}/v1/chat/completions
     """
+    print(f"[NOPROXY] Route matched! Site parameter: {site}")
+    
     if flask.request.method == 'OPTIONS':
         response = flask.make_response('', 204)
         response.headers['Access-Control-Allow-Origin'] = '*'
@@ -340,6 +363,8 @@ def chat_completions(site):
     OpenAI-compatible endpoint that proxies to arbitrary base URLs.
     Accepts OpenAI headers/payload and forwards to {site}/v1/chat/completions
     """
+    print(f"[PROXY] Route matched! Site parameter: {site}")
+    
     if flask.request.method == 'OPTIONS':
         response = flask.make_response('', 204)
         response.headers['Access-Control-Allow-Origin'] = '*'
@@ -352,6 +377,8 @@ def chat_completions(site):
 @app.route('/<path:site>', methods=['GET', 'POST', 'DELETE', 'PUT', 'PATCH', 'HEAD', 'OPTIONS'])
 def proxy(site):
     """General purpose proxy for any HTTP method to any URL"""
+    print(f"[GENERAL PROXY] Route matched! Site parameter: {site}")
+    
     # Handle preflight OPTIONS requests immediately
     if flask.request.method == 'OPTIONS':
         response = flask.make_response('', 204)
